@@ -5,6 +5,10 @@ import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.io.*;
 import java.util.ArrayList;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public class CosIntegralApp extends JFrame {
 
@@ -22,9 +26,9 @@ public class CosIntegralApp extends JFrame {
     private boolean isUpdating = false;
 
     public CosIntegralApp() {
-        setTitle("Вычисление интеграла cos(x) (Многопоточность)");
+        setTitle("Вычисление интеграла cos(x) (Callable/Future)");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        setSize(700, 850); 
+        setSize(700, 850);
         setLocationRelativeTo(null);
 
         integralList = new ArrayList<>();
@@ -46,11 +50,11 @@ public class CosIntegralApp extends JFrame {
 
         JPanel radioPanel = new JPanel(new FlowLayout());
         singleThreadRadio = new JRadioButton("Однопоточно (Main)", true);
-        multiThreadRadio = new JRadioButton("Многопоточно (3 threads)");
+        multiThreadRadio = new JRadioButton("Многопоточно (3 threads, Callable)");
         ButtonGroup group = new ButtonGroup();
         group.add(singleThreadRadio);
         group.add(multiThreadRadio);
-        
+
         radioPanel.add(new JLabel("Режим:"));
         radioPanel.add(singleThreadRadio);
         radioPanel.add(multiThreadRadio);
@@ -87,9 +91,7 @@ public class CosIntegralApp extends JFrame {
 
         addButton.addActionListener(e -> addRow());
         deleteButton.addActionListener(e -> deleteRow());
-        
         computeButton.addActionListener(e -> computeIntegral());
-        
         clearButton.addActionListener(e -> clearTable());
         fillButton.addActionListener(e -> fillTable());
 
@@ -118,6 +120,7 @@ public class CosIntegralApp extends JFrame {
         add(scrollPane, BorderLayout.CENTER);
         add(southPanel, BorderLayout.SOUTH);
 
+
         tableModel.addTableModelListener(e -> {
             if (isUpdating) return;
             if (e.getType() == TableModelEvent.UPDATE) {
@@ -135,6 +138,7 @@ public class CosIntegralApp extends JFrame {
                         oldLower = rec.getLowerBound();
                         oldUpper = rec.getUpperBound();
                         oldStep = rec.getStep();
+
                         switch (col) {
                             case 1 -> oldVal = oldLower;
                             case 2 -> oldVal = oldUpper;
@@ -151,7 +155,7 @@ public class CosIntegralApp extends JFrame {
                         }
                         rec.validateBounds();
                         rec.setResult(0.0);
-                        
+
                         isUpdating = true;
                         tableModel.setValueAt("", row, 4);
                         isUpdating = false;
@@ -182,30 +186,29 @@ public class CosIntegralApp extends JFrame {
             isUpdating = false;
         });
     }
-    public static class ComputeThread extends Thread {
+
+   
+    public static class ComputeTask implements Callable<Double> {
         private final double start;
         private final double end;
         private final double step;
-        private double partialSum = 0;
 
-        public ComputeThread(double start, double end, double step) {
+        public ComputeTask(double start, double end, double step) {
             this.start = start;
             this.end = end;
             this.step = step;
         }
 
         @Override
-        public void run() {
+        public Double call() {
+            double partialSum = 0;
             double x;
             for (x = start; x < end; x += step) {
                 partialSum += Math.cos(x) * step;
             }
             if (x > end && (x - step) < end) {
-                 partialSum += Math.cos(end) * (end - (x - step));
+                partialSum += Math.cos(end) * (end - (x - step));
             }
-        }
-
-        public double getPartialSum() {
             return partialSum;
         }
     }
@@ -219,7 +222,10 @@ public class CosIntegralApp extends JFrame {
 
         try {
             int id = Integer.parseInt(tableModel.getValueAt(row, 0).toString());
-            RecIntegral rec = integralList.stream().filter(r -> r.equalsById(id)).findFirst().orElse(null);
+            RecIntegral rec = integralList.stream()
+                    .filter(r -> r.equalsById(id))
+                    .findFirst()
+                    .orElse(null);
 
             if (rec == null) return;
 
@@ -228,6 +234,7 @@ public class CosIntegralApp extends JFrame {
             double h = rec.getStep();
 
             if (singleThreadRadio.isSelected()) {
+                
                 long startTime = System.nanoTime();
 
                 double sum = 0, x;
@@ -239,43 +246,43 @@ public class CosIntegralApp extends JFrame {
 
                 rec.setResult(sum);
                 tableModel.setValueAt(sum, row, 4);
-                JOptionPane.showMessageDialog(this, "Вычисление завершено (1 поток).\nВремя: " + timeMs + " мс");
+                JOptionPane.showMessageDialog(this,
+                        "Вычисление завершено (1 поток).\nВремя: " + timeMs + " мс");
 
             } else {
-                
                 new Thread(() -> {
                     long startTime = System.nanoTime();
 
-                    double range = b - a;
-                    double part = range / 3.0;
+                    ExecutorService executor = Executors.newFixedThreadPool(3);
 
-                    ComputeThread t1 = new ComputeThread(a, a + part, h);
-                    ComputeThread t2 = new ComputeThread(a + part, a + 2 * part, h);
-                    ComputeThread t3 = new ComputeThread(a + 2 * part, b, h);
-
-                    t1.start();
-                    t2.start();
-                    t3.start();
+                    double part = (b - a) / 3.0;
+                    ComputeTask task1 = new ComputeTask(a, a + part, h);
+                    ComputeTask task2 = new ComputeTask(a + part, a + 2 * part, h);
+                    ComputeTask task3 = new ComputeTask(a + 2 * part, b, h);
 
                     try {
-                        t1.join();
-                        t2.join();
-                        t3.join();
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
+                        Future<Double> future1 = executor.submit(task1);
+                        Future<Double> future2 = executor.submit(task2);
+                        Future<Double> future3 = executor.submit(task3);
+
+                        double totalSum = future1.get() + future2.get() + future3.get();
+
+                        long endTime = System.nanoTime();
+                        double timeMs = (endTime - startTime) / 1_000_000.0;
+
+                        SwingUtilities.invokeLater(() -> {
+                            rec.setResult(totalSum);
+                            tableModel.setValueAt(totalSum, row, 4);
+                            JOptionPane.showMessageDialog(this,
+                                    "Вычисление завершено (3 потока, Callable/Future).\nВремя: " + timeMs + " мс");
+                        });
+
+                    } catch (Exception ex) {
+                        SwingUtilities.invokeLater(() ->
+                                JOptionPane.showMessageDialog(this, "Ошибка вычисления: " + ex.getMessage()));
+                    } finally {
+                        executor.shutdown();
                     }
-
-                    double totalSum = t1.getPartialSum() + t2.getPartialSum() + t3.getPartialSum();
-
-                    long endTime = System.nanoTime();
-                    double timeMs = (endTime - startTime) / 1_000_000.0;
-
-                    SwingUtilities.invokeLater(() -> {
-                        rec.setResult(totalSum);
-                        tableModel.setValueAt(totalSum, row, 4);
-                        JOptionPane.showMessageDialog(this, "Вычисление завершено (3 потока).\nВремя: " + timeMs + " мс");
-                    });
-
                 }).start();
             }
 
@@ -283,7 +290,6 @@ public class CosIntegralApp extends JFrame {
             JOptionPane.showMessageDialog(this, "Ошибка: " + ex.getMessage());
         }
     }
-
 
     private void addRow() {
         try {
